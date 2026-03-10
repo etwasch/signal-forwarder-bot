@@ -118,23 +118,30 @@ nc -U "$SOCKET" | while IFS= read -r line; do
 		
 		payload='{"jsonrpc":"2.0","method":"send","id":1,"params":{"groupId":"'$TARGET_GROUP'",'$MESSAGE$([ -n "$STYLES" ] && echo ,$STYLES)$([ -n "$MENTIONS" ] && echo ,$MENTIONS)$([ -n "$PREVIEW" ] && echo ,$PREVIEW)$([ -n "$ATTACHMENTS" ] && echo ,$ATTACHMENTS)$([ -n "$QUOTE" ] && echo ,$QUOTE)$([ -n "$EDIT" ] && echo ,$EDIT)'}}'
 		response=$(rpc_call "$payload")
-		
+
+		timestamp_in=$(json_get "timestamp" "$line")
+		timestamp_out=$(json_get "timestamp" "$response")
+		echo $timestamp_in $timestamp_out >> $TIMESTAMPS
+
 		#echo $line
 		#echo ""	
 		#echo $payload
 		#echo ""
 		#echo $response
 		#echo "----------"
-		
-		timestamp_in=$(json_get "timestamp" "$line")
-		timestamp_out=$(json_get "timestamp" "$response")
-		echo $timestamp_in $timestamp_out >> $TIMESTAMPS
 	else
 		remoteDelete=$(echo "$lineWithoutQuote" | grep -oE '"remoteDelete":{[^}]*}')
 		if [[ -n "$remoteDelete" ]]; then
 			timestamp=$(grep $(json_get "timestamp" "$remoteDelete") $TIMESTAMPS | head -1 | sed 's/^.* //')
 			payload='{"jsonrpc":"2.0","method":"remoteDelete","id":1,"params":{"groupId":"'$TARGET_GROUP'","targetTimestamp":'$timestamp'}}'
 			response=$(rpc_call "$payload")
+
+			#echo $line
+			#echo ""	
+			#echo $payload
+			#echo ""
+			#echo $response
+			#echo "----------"
 		fi
 	fi
 done

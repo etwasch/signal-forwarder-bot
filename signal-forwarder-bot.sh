@@ -63,7 +63,7 @@ nc -U "$SOCKET" | while IFS= read -r line; do
 		fi
 		
 		MENTIONS=""
-		mentions=$(echo "$lineWitoutQuote" | grep -oE '"mentions":\[[^]]*\]')
+		mentions=$(echo "$lineWithoutQuote" | grep -oE '"mentions":\[[^]]*\]')
 		if [[ -n "$mentions" ]]; then
 			mentions=$(echo "$mentions" | grep -oE '{"name":[^}]*}')
 			MENTIONS='"mentions":['
@@ -75,7 +75,7 @@ nc -U "$SOCKET" | while IFS= read -r line; do
 		fi
 	
 		PREVIEW=""
-		preview=$(echo "$lineWitoutQuote" | grep -oE '"previews":\[[^]]*\]')
+		preview=$(echo "$lineWithoutQuote" | grep -oE '"previews":\[[^]]*\]')
 		if [[ -n "$preview" ]]; then
 			previewImage=$(json_get "id" $(echo "$preview" | grep -oE '"image":{[^}]*}'))
 			PREVIEW='"previewUrl":"'$(json_get "url" "$preview")'","previewTitle":"'$(json_get "title" "$preview")'","previewDescription":"'$(json_get "description" "$preview")'"'$([ -n "$previewImage" ] && echo ',"previewImage":"'$IMAGES$previewImage'"')
@@ -108,7 +108,7 @@ nc -U "$SOCKET" | while IFS= read -r line; do
 		fi
 		
 		EDIT=""
-		editMessage=$(echo "$lineWitoutQuote" | grep -oE '"editMessage":{[^}]*}')
+		editMessage=$(echo "$lineWithoutQuote" | grep -oE '"editMessage":{[^}]*}')
 		if [[ -n "$editMessage" ]]; then
 			timestamp=$(grep $(json_get "targetSentTimestamp" "$editMessage") $TIMESTAMPS | head -1 | sed 's/^.* //')
 			EDIT='"editTimestamp":'$timestamp

@@ -42,18 +42,18 @@ nc -U "$SOCKET" | while IFS= read -r line; do
 	echo "$line" | grep -q '"envelope":' || { continue; }
 	echo "$line" | grep -q "$SOURCE_GROUP" || { continue; }
 	
-	lineWitoutQuote=$(echo "$line" | sed 's/quote[^}]*}//')
-	MESSAGE=$(json_get "message" "$lineWitoutQuote")
-	attachments=$(echo "$lineWitoutQuote" | grep -oE '"attachments":\[[^]]*\]' | sed 's/"attachments":\[\]//')
+	lineWithoutQuote=$(echo "$line" | sed 's/quote[^}]*}//')
+	MESSAGE=$(json_get "message" "$lineWithoutQuote")
+	attachments=$(echo "$lineWithoutQuote" | grep -oE '"attachments":\[[^]]*\]' | sed 's/"attachments":\[\]//')
 
 	if [[ -n "$MESSAGE" || -n "$attachments" ]]; then
-		sender=$(json_get "sourceUuid" "$lineWitoutQuote")
+		sender=$(json_get "sourceUuid" "$lineWithoutQuote")
 		response=$(rpc_call '{"jsonrpc":"2.0","method":"listContacts","id":1,"params":{"recipient":"'$sender'"}}')
 		sender=$(json_get "givenName" $(echo "$response" | grep -oE '"profile":[^}]*}'))
 		MESSAGE='"message":"'$MESSAGE$([ -n "$MESSAGE" ] && echo '\n\n')$sender' via -kønzi-"'
 		
 		STYLES=""
-		styles=$(echo "$lineWitoutQuote" | grep -oE '"textStyles":\[[^]]*\]')
+		styles=$(echo "$lineWithoutQuote" | grep -oE '"textStyles":\[[^]]*\]')
 		if [[ -n "$styles" ]]; then
 			styles=$(echo "$styles" | grep -oE '{"style":[^}]*}')
 			STYLES='"textStyle":['

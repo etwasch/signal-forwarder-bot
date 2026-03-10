@@ -47,9 +47,7 @@ nc -U "$SOCKET" | while IFS= read -r line; do
 	attachments=$(echo "$lineWithoutQuote" | grep -oE '"attachments":\[[^]]*\]' | sed 's/"attachments":\[\]//')
 
 	if [[ -n "$MESSAGE" || -n "$attachments" ]]; then
-		sender=$(json_get "sourceUuid" "$lineWithoutQuote")
-		response=$(rpc_call '{"jsonrpc":"2.0","method":"listContacts","id":1,"params":{"recipient":"'$sender'"}}')
-		sender=$(json_get "givenName" $(echo "$response" | grep -oE '"profile":[^}]*}'))
+		sender=$(json_get "sourceName" "$lineWithoutQuote")
 		MESSAGE='"message":"'$MESSAGE$([ -n "$MESSAGE" ] && echo '\n\n')$sender' via -kønzi-"'
 		
 		STYLES=""

@@ -42,7 +42,8 @@ nc -U "$SOCKET" | while IFS= read -r line; do
 	echo "$line" | grep -q '"envelope":' || { continue; }
 	echo "$line" | grep -q "$SOURCE_GROUP" || { continue; }
 	
-	lineWithoutQuote=$(echo "$line" | sed 's/quote[^}]*}//')
+	quote=$(echo "$line" | grep -oE '"quote":{([^\[]*(\[[^]]*])?)*?}')
+	[[ -n $quote ]] && lineWithoutQuote=$(echo "$line" | sed "s|$(echo "$quote" | sed 's/[\[]/\\&/g')||") || lineWithoutQuote=$line
 	MESSAGE=$(json_get "message" "$lineWithoutQuote")
 	attachments=$(echo "$lineWithoutQuote" | grep -oE '"attachments":\[[^]]*\]' | sed 's/"attachments":\[\]//')
 
@@ -99,7 +100,6 @@ nc -U "$SOCKET" | while IFS= read -r line; do
 		fi
 	
 		QUOTE=""
-		quote=$(echo "$line" | grep -oE '"quote":{[^}]*}')
 		if [[ -n "$quote" ]]; then
 			timestamp=$(grep $(json_get "id" "$quote") $TIMESTAMPS | head -1 | sed 's/^.* //')
 			thumbnail=$(echo "$quote" | grep -oE '"thumbnail":{[^}]*\}')

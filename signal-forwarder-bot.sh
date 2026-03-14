@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+trap '
+	echo signal-forwarder-bot stopped, shutting down...;
+	exec 3>&-; exec 4<&-;
+	rm -f "$SIGNAL_FIFO_IN" "$SIGNAL_FIFO_OUT";
+	kill "$NC_PID" 2>/dev/null;' EXIT
+trap 'exit 0' INT TERM
 
 # ================================================
 # signal-forwarder-bot
@@ -11,6 +17,7 @@ UUID="XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
 SOCKET="${XDG_RUNTIME_DIR:-$HOME/.local/run}/signal-cli/socket"
 IMAGES="${HOME}/.local/share/signal-cli/attachments/"
 TIMESTAMPS="${HOME}/.local/share/signal-cli/timestamps.txt"
+SIGNATURE="via -kønzi-"
 
 echo "signal-forwarder-bot starting"
 
@@ -23,38 +30,40 @@ echo "Connected to socket, waiting for messages"
 json_get() {
 	local key=$1
 	local json=$2
-	local string_regex='"([^"\]|\\.)*"'
-	local number_regex='-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?'
-	local value_regex="${string_regex}|${number_regex}|true|false|null"
-	local pair_regex="\"${key}\"[[:space:]]*:[[:space:]]*(${value_regex})"
-
-	[[ ${json} =~ ${pair_regex} ]]
-	echo $(echo "${BASH_REMATCH[1]}" | (sed 's/^"//;s/"$//;s/^null//'))
+	[[ ${json} =~ '"'$key'":'\"?([^],}\"]*) ]]
+	echo $(echo "${BASH_REMATCH[1]}" | (sed 's/^null$//'))
 }
 
-rpc_call() {
-	local json=$1
-	echo $(echo "$json" | nc -U "$SOCKET" | head -1)
-}
+SIGNAL_FIFO_IN=$(mktemp -u)
+SIGNAL_FIFO_OUT=$(mktemp -u)
+mkfifo "$SIGNAL_FIFO_IN" "$SIGNAL_FIFO_OUT"
+nc -U "$SOCKET" <"$SIGNAL_FIFO_IN" >"$SIGNAL_FIFO_OUT" &
+#NC_PID=$!
+exec 3>"$SIGNAL_FIFO_IN"
+exec 4<"$SIGNAL_FIFO_OUT"
+TO_SIGNAL=3
+FROM_SIGNAL=4
 
-nc -U "$SOCKET" | while IFS= read -r line; do
-	[[ -z "$line" ]] && continue
-	echo "$line" | grep -q '"envelope":' || { continue; }
-	echo "$line" | grep -q "$SOURCE_GROUP" || { continue; }
+receive='{"jsonrpc":"2.0","method":"receive","id":1,"params":{"timeout":1,"maxMessages":1}}'
+while true; do
+	echo "$receive" >&"$TO_SIGNAL"
+	read -r line <&"$FROM_SIGNAL"
+	[[ ! "$line" =~ "$SOURCE_GROUP" ]] && { continue; }
 	
-	quote=$(echo "$line" | grep -oE '"quote":{([^\[]*(\[[^]]*])?)*?}')
+	quote=$(echo "$line" | grep -oE '"quote":{([^[]*(\[[^]]*])?)*?}')
 	[[ -n $quote ]] && lineWithoutQuote=$(echo "$line" | sed "s|$(echo "$quote" | sed 's/[\[]/\\&/g')||") || lineWithoutQuote=$line
-	MESSAGE=$(json_get "message" "$lineWithoutQuote")
-	attachments=$(echo "$lineWithoutQuote" | grep -oE '"attachments":\[[^]]*\]' | sed 's/"attachments":\[\]//')
+	[[ ${lineWithoutQuote} =~ '"message":"'([^\"]*) ]]
+	MESSAGE="${BASH_REMATCH[1]}"
+	[[ ${lineWithoutQuote} =~ '"attachments":['([^]]*) ]] && attachments="${BASH_REMATCH[1]}" || attachments=""
 
+	payload=""
 	if [[ -n "$MESSAGE" || -n "$attachments" ]]; then
 		sender=$(json_get "sourceName" "$lineWithoutQuote")
-		MESSAGE='"message":"'$MESSAGE$([ -n "$MESSAGE" ] && echo '\n\n')$sender' via -kønzi-"'
+		MESSAGE='"message":"'$MESSAGE$([ -n "$MESSAGE" ] && echo '\n\n')$sender' '$SIGNATURE'"'
 		
 		STYLES=""
-		styles=$(echo "$lineWithoutQuote" | grep -oE '"textStyles":\[[^]]*\]')
-		if [[ -n "$styles" ]]; then
-			styles=$(echo "$styles" | grep -oE '{"style":[^}]*}')
+		if [[ ${lineWithoutQuote} =~ '"textStyles":['([^]]*) ]]; then
+			styles=$(echo "${BASH_REMATCH[1]}" | grep -oE '{"style":[^}]*}')
 			STYLES='"textStyle":['
 			for style in $styles
 			do
@@ -64,9 +73,8 @@ nc -U "$SOCKET" | while IFS= read -r line; do
 		fi
 		
 		MENTIONS=""
-		mentions=$(echo "$lineWithoutQuote" | grep -oE '"mentions":\[[^]]*\]')
-		if [[ -n "$mentions" ]]; then
-			mentions=$(echo "$mentions" | grep -oE '{"name":[^}]*}')
+		if [[ ${lineWithoutQuote} =~ '"mentions":['([^]]*) ]]; then
+			mentions=$(echo  "${BASH_REMATCH[1]}" | grep -oE '{"name":[^}]*}')
 			MENTIONS='"mentions":['
 			for mention in $mentions
 			do
@@ -76,25 +84,20 @@ nc -U "$SOCKET" | while IFS= read -r line; do
 		fi
 	
 		PREVIEW=""
-		preview=$(echo "$lineWithoutQuote" | grep -oE '"previews":\[[^]]*\]')
-		if [[ -n "$preview" ]]; then
-			previewImage=$(json_get "id" $(echo "$preview" | grep -oE '"image":{[^}]*}'))
+		if [[ ${lineWithoutQuote} =~ '"previews":['([^]]*) ]]; then
+			preview="${BASH_REMATCH[1]}"
+			previewImage=$(json_get "id" "$preview")
 			PREVIEW='"previewUrl":"'$(json_get "url" "$preview")'","previewTitle":"'$(json_get "title" "$preview")'","previewDescription":"'$(json_get "description" "$preview")'"'$([ -n "$previewImage" ] && echo ',"previewImage":"'$IMAGES$previewImage'"')
 		fi
 	
 		ATTACHMENTS=""
-		attachmentIds=$(echo "$attachments" | grep -oE '"id":"(([^\"\]|\\.)*)"' | sed 's/"//g;s/id://g')
-		CONTENT_TYPES=$(echo "$attachments" | grep -oE '"contentType":"(([^\"\]|\\.)*)"' | sed 's/"//g;s/contentType://g')
-		CONTENT_TYPES=($CONTENT_TYPES)
-		if [[ -n "$attachmentIds" ]]; then
-			ATTACHMENTS='"attachment":['
-			i=0
-			for id in $attachmentIds
+		if [[ -n "$attachments" ]]; then
+			attachmentIds=($(echo "$attachments" | grep -oE '"id":"(([^\"\]|\\.)*)"' | sed 's/"//g;s/id://g'))
+			CONTENT_TYPES=($(echo "$attachments" | grep -oE '"contentType":"(([^\"\]|\\.)*)"' | sed 's/"//g;s/contentType://g'))
+			ATTACHMENTS='"attachment":['			
+			for i in ${!attachmentIds[@]}
 			do
-				response=$(rpc_call '{"jsonrpc":"2.0","method":"getAttachment","id":1,"params":{"id":"'$id'"}}')
-				attachment=$(json_get "data" "$response")
-				ATTACHMENTS="${ATTACHMENTS}\"data:${CONTENT_TYPES[$i]};base64,$attachment\","
-				((i++))
+				ATTACHMENTS=$ATTACHMENTS'"data:'${CONTENT_TYPES[$i]}';base64,'$(cat $IMAGES${attachmentIds[$i]} | base64)'",'
 			done
 			ATTACHMENTS=${ATTACHMENTS%,}]
 		fi
@@ -102,47 +105,41 @@ nc -U "$SOCKET" | while IFS= read -r line; do
 		QUOTE=""
 		if [[ -n "$quote" ]]; then
 			timestamp=$(grep $(json_get "id" "$quote") $TIMESTAMPS | head -1 | sed 's/^.* //')
-			thumbnail=$(echo "$quote" | grep -oE '"thumbnail":{[^}]*\}')
+			[[ ${quote} =~ '"thumbnail":{'([^}]*) ]] && thumbnail="${BASH_REMATCH[1]}" || thumbnail=""
 			[[ -n "$thumbnail" ]] && thumbnail=$(json_get "contentType" "$thumbnail")':thumbnail:'$IMAGES$(json_get "id" "$thumbnail")
 			QUOTE='"quoteTimestamp":'$timestamp',"quoteAuthor":"'$UUID'"'$([ -n "$thumbnail" ] && echo ',"quoteAttachment":"'$thumbnail'"')
 		fi
 		
 		EDIT=""
-		editMessage=$(echo "$lineWithoutQuote" | grep -oE '"editMessage":{[^}]*}')
-		if [[ -n "$editMessage" ]]; then
-			timestamp=$(grep $(json_get "targetSentTimestamp" "$editMessage") $TIMESTAMPS | head -1 | sed 's/^.* //')
+		if [[ ${lineWithoutQuote} =~ '"editMessage":{'([^}]*) ]]; then
+			timestamp=$(grep $(json_get "targetSentTimestamp" "${BASH_REMATCH[1]}") $TIMESTAMPS | head -1 | sed 's/^.* //')
 			EDIT='"editTimestamp":'$timestamp
 		fi
 		
 		payload='{"jsonrpc":"2.0","method":"send","id":1,"params":{"groupId":"'$TARGET_GROUP'",'$MESSAGE$([ -n "$STYLES" ] && echo ,$STYLES)$([ -n "$MENTIONS" ] && echo ,$MENTIONS)$([ -n "$PREVIEW" ] && echo ,$PREVIEW)$([ -n "$ATTACHMENTS" ] && echo ,$ATTACHMENTS)$([ -n "$QUOTE" ] && echo ,$QUOTE)$([ -n "$EDIT" ] && echo ,$EDIT)'}}'
-		response=$(rpc_call "$payload")
+		echo $payload >&"$TO_SIGNAL"
+		read -r response <&"$FROM_SIGNAL"
 
 		timestamp_in=$(json_get "timestamp" "$line")
 		timestamp_out=$(json_get "timestamp" "$response")
 		echo $timestamp_in $timestamp_out >> $TIMESTAMPS
-
-		#echo $line
-		#echo ""	
-		#echo $payload
-		#echo ""
-		#echo $response
-		#echo "----------"
 	else
-		remoteDelete=$(echo "$lineWithoutQuote" | grep -oE '"remoteDelete":{[^}]*}')
-		if [[ -n "$remoteDelete" ]]; then
-			timestamp=$(grep $(json_get "timestamp" "$remoteDelete") $TIMESTAMPS | head -1 | sed 's/^.* //')
+		if [[ ${lineWithoutQuote} =~ '"remoteDelete":{'([^}]*) ]]; then
+			timestamp=$(grep $(json_get "timestamp" "${BASH_REMATCH[1]}") $TIMESTAMPS | head -1 | sed 's/^.* //')
 			payload='{"jsonrpc":"2.0","method":"remoteDelete","id":1,"params":{"groupId":"'$TARGET_GROUP'","targetTimestamp":'$timestamp'}}'
-			response=$(rpc_call "$payload")
-
-			#echo $line
-			#echo ""	
-			#echo $payload
-			#echo ""
-			#echo $response
-			#echo "----------"
+			echo $payload >&"$TO_SIGNAL"
+			read -r response <&"$FROM_SIGNAL"
 		fi
+	fi
+	if [[ -n $payload ]]; then
+		echo "$line"
+		echo ""	
+		echo $(echo $payload | sed -E 's/(base64,[^"]{0,30})[^"]*"/\1..."/g')
+		echo ""
+		echo "$response"
+		echo "----------"
 	fi
 done
 
 echo ""
-echo "ERROR: nc exited. daemon stopped or socket lost."
+echo "ERROR: Something went wrong..."
